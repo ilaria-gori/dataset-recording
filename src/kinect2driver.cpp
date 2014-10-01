@@ -165,6 +165,7 @@ void Kinect2Driver::start()
 	unsigned int buffer_color = def_width[0] * def_height[0] * 4 * sizeof(unsigned char);
 	unsigned int buffer_depth = def_width[1] * def_height[1] * sizeof(unsigned short);
 	namedWindow("Depth");
+	namedWindow("Users");
 
 	while (!is_stopping)
 	{
