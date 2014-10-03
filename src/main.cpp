@@ -18,7 +18,7 @@ using namespace std;
 
 int main(int argc, char *argv[])
 {
-	CameraDriver driver;
+	Kinect2Driver driver;
 	int width = 640;
 	int height = 480;
 
@@ -39,6 +39,9 @@ int main(int argc, char *argv[])
 	while (recording)
 	{
 		namedWindow("Color");
+		namedWindow("Depth");
+		namedWindow("Users");
+		namedWindow("Skeleton");
 		int code = waitKey(freq);
 		switch (code)
 		{

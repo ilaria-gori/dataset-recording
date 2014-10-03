@@ -18,8 +18,10 @@ class Kinect2Driver : public Driver
 		std::thread rec_t;
 		std::mutex mtx;
 		bool is_stopping;
-		int def_width[2];
-		int def_height[2];
+		int def_width_depth;
+		int def_height_depth;
+		int def_width_color;
+		int def_height_color;
 		int width;
 		int height;
 		std::string rgb_folder;
@@ -39,7 +41,7 @@ class Kinect2Driver : public Driver
 		cv::Vec3b users_color[BODY_COUNT];
 
 		void start();
-		void getSkeletons(IBodyFrame* body_frame, cv::Mat &depth_to_show, const int n_frame);
+		void getSkeletons(IBodyFrame* body_frame, cv::Mat &skeleton, const int n_frame);
 		template<class Interface>
 		inline void safeRelease(Interface *& pInterfaceToRelease)
 		{

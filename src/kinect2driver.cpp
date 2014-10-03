@@ -65,6 +65,7 @@ bool Kinect2Driver::initialize(const int width, const int height)
 	safeRelease(color_source);
 	safeRelease(depth_source);
 	safeRelease(body_source);
+	safeRelease(users_source);
 
 	if (!sensor || FAILED(hr))
 	{
@@ -72,11 +73,10 @@ bool Kinect2Driver::initialize(const int width, const int height)
 		return false;
 	}
 
-	color_description->get_Width(&def_width[0]);
-	color_description->get_Height(&def_height[0]);
-
-	depth_description->get_Width(&def_width[1]);
-	depth_description->get_Height(&def_height[1]);
+	color_description->get_Width(&def_width_color);
+	color_description->get_Height(&def_height_color);
+	depth_description->get_Width(&def_width_depth);
+	depth_description->get_Height(&def_height_depth);
 
 	this->width = width;
 	this->height = height;
@@ -109,14 +109,14 @@ void Kinect2Driver::stop()
 		rec_t.join();
 }
 
-void Kinect2Driver::getSkeletons(IBodyFrame* body_frame, Mat &depth_to_show, const int n_frame)
+void Kinect2Driver::getSkeletons(IBodyFrame* body_frame, Mat &skeleton, const int n_frame)
 {
 	stringstream ss; ss << n_frame;
 	string id = ss.str();
 	ofstream skeleton_file;
 	string frame_name = skel_folder + "joints" + id + ".txt";
 	skeleton_file.open(frame_name);
-	
+
 	IBody* body[BODY_COUNT] = { 0 };
 	body_frame->GetAndRefreshBodyData(BODY_COUNT, body);
 
@@ -139,9 +139,9 @@ void Kinect2Driver::getSkeletons(IBodyFrame* body_frame, Mat &depth_to_show, con
 				int x = static_cast<int>(depth_space_point.X);
 				int y = static_cast<int>(depth_space_point.Y);
 				skeleton_file << joint[type].Position.X << joint[type].Position.Y << joint[type].Position.Z << depth_space_point.X << depth_space_point.Y << "\n";
-				if ((x >= 0) && (x < def_width[0]) && (y >= 0) && (y < def_height[0]))
+				if ((x >= 0) && (x < def_width_depth) && (y >= 0) && (y < def_height_depth))
 				{
-					cv::circle(depth_to_show, cv::Point(x, y), 5, static_cast< cv::Scalar >(users_color[count]), -1);
+					cv::circle(skeleton, cv::Point(x, y), 5, static_cast< cv::Scalar >(users_color[count]), -1);
 				}
 			}
 		}
@@ -155,17 +155,14 @@ void Kinect2Driver::start()
 	int n_frame = 0;
 	string frame_name;
 
-	Mat color_big(def_height[0], def_width[0], CV_8UC4);
-	Mat depth_big(def_height[1], def_width[1], CV_16UC1);
-	Mat users_big(def_height[1], def_width[1], CV_8UC3);
-	Mat depth_to_show(def_height[1], def_width[1], CV_8UC3);
+	Mat color_big(def_height_color, def_width_color, CV_8UC4);
+	Mat depth_big(def_height_depth, def_width_depth, CV_16SC1);
+	Mat users_big(def_height_depth, def_width_depth, CV_8UC3);
 	Mat color_small(height, width, CV_8UC4);
-	Mat users_small(height, width, CV_8UC3);
-	Mat depth_tmp(def_height[1], def_width[1], CV_8UC1);
-	unsigned int buffer_color = def_width[0] * def_height[0] * 4 * sizeof(unsigned char);
-	unsigned int buffer_depth = def_width[1] * def_height[1] * sizeof(unsigned short);
-	namedWindow("Depth");
-	namedWindow("Users");
+	Mat depth_to_show(def_height_depth, def_width_depth, CV_8UC1);
+	Mat skeleton(def_height_depth, def_width_depth, CV_8UC3);
+	unsigned int buffer_color = def_width_color * def_height_color * 4 * sizeof(unsigned char);
+	unsigned int buffer_depth = def_width_depth * def_height_depth * sizeof(unsigned short);
 
 	while (!is_stopping)
 	{
@@ -181,7 +178,7 @@ void Kinect2Driver::start()
 			hr &= body_reader->AcquireLatestFrame(&body_frame);
 			hr &= users_reader->AcquireLatestFrame(&users_frame);
 
-			if (FAILED(hr))
+			if (FAILED(hr) || depth_frame == nullptr || color_frame == nullptr || users_frame == nullptr || body_frame == nullptr)
 				continue;
 
 			color_frame->CopyConvertedFrameDataToArray(buffer_color, reinterpret_cast<BYTE*>(color_big.data), ColorImageFormat::ColorImageFormat_Bgra);
@@ -189,18 +186,17 @@ void Kinect2Driver::start()
 			safeRelease(color_frame);
 
 			depth_frame->AccessUnderlyingBuffer(&buffer_depth, reinterpret_cast<UINT16**>(&depth_big.data));
-			depth_big.convertTo(depth_tmp, CV_8U, -255.0f / 4500.0f, 255.0f);
-			cvtColor(depth_tmp, depth_to_show, COLOR_GRAY2RGB);
+			depth_big.convertTo(depth_to_show, CV_8U, -255.0f / 4500.0f, 255.0f);
 			safeRelease(depth_frame);
 
 			unsigned int buffer_users = 0;
 			unsigned char* tmp = nullptr;
 			users_frame->AccessUnderlyingBuffer(&buffer_users, &tmp);
-			for (int y = 0; y < def_height[1]; y++)
+			for (int y = 0; y < def_height_depth; y++)
 			{
-				for (int x = 0; x < def_width[1]; x++)
+				for (int x = 0; x < def_width_depth; x++)
 				{
-					unsigned int index = y * def_width[1] + x;
+					unsigned int index = y * def_width_depth + x;
 					if (tmp[index] != 0xff)
 					{
 						users_big.at<cv::Vec3b>(y, x) = users_color[tmp[index]];
@@ -211,24 +207,24 @@ void Kinect2Driver::start()
 					}
 				}
 			}
-			cv::resize(users_big, users_small, cv::Size(), 0.5, 0.5);
 			safeRelease(users_frame);
 
-			getSkeletons(body_frame, depth_to_show, n_frame);
-			
+			getSkeletons(body_frame, skeleton, n_frame);
+
 			imshow("Color", color_small);
 			imshow("Depth", depth_to_show);
-			imshow("Users", users_small);
-			waitKey(10);
+			imshow("Users", users_big);
+			imshow("Skeleton", skeleton);
+			waitKey(30);
 
 			stringstream ss; ss << n_frame;
 			string id = ss.str();
-			frame_name = rgb_folder + "img" + id + ".png";
+			/*frame_name = rgb_folder + "img" + id + ".png";
 			imwrite(frame_name, color_small);
 			frame_name = depth_folder + "img" + id + ".png";
-			imwrite(frame_name, depth_big);
+			imwrite(frame_name, depth_big);	
 			frame_name = users_folder + "img" + id + ".png";
-			imwrite(frame_name, users_small);
+			imwrite(frame_name, users_big);*/
 			n_frame++;
 		}
 		catch (std::exception e)
