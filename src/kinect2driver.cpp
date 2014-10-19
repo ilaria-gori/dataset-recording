@@ -16,15 +16,14 @@ Kinect2Driver::Kinect2Driver()
 
 Kinect2Driver::~Kinect2Driver()
 {
-	safeRelease(color_reader);
-	safeRelease(color_description);
-	safeRelease(depth_reader);
-	safeRelease(depth_description);
-	safeRelease(body_reader);
+	safeRelease(multi_source_frame_reader);
 	safeRelease(coordinate_mapper);
-	safeRelease(users_reader);
 
-	sensor->Close();
+	if (sensor)
+	{
+		sensor->Close();
+	}
+
 	safeRelease(sensor);
 }
 
@@ -34,52 +33,36 @@ bool Kinect2Driver::initialize(const int width, const int height)
 
 	hr = GetDefaultKinectSensor(&sensor);
 	if (FAILED(hr))
-		return false;
-
-	IColorFrameSource* color_source = NULL;
-	IDepthFrameSource* depth_source = NULL;
-	IBodyFrameSource* body_source = NULL;
-	IBodyIndexFrameSource* users_source = NULL;
-
-	hr = sensor->Open();
-
-	if (SUCCEEDED(hr))
 	{
-		hr = sensor->get_ColorFrameSource(&color_source);
-		hr &= sensor->get_DepthFrameSource(&depth_source);
-		hr &= sensor->get_BodyFrameSource(&body_source);
-		hr &= sensor->get_CoordinateMapper(&coordinate_mapper);
-		hr &= sensor->get_BodyIndexFrameSource(&users_source);
-	}
-
-	if (SUCCEEDED(hr))
-	{
-		hr = color_source->OpenReader(&color_reader);
-		hr &= color_source->get_FrameDescription(&color_description);
-		hr &= depth_source->OpenReader(&depth_reader);
-		hr &= depth_source->get_FrameDescription(&depth_description);
-		hr &= body_source->OpenReader(&body_reader);
-		hr &= users_source->OpenReader(&users_reader);
-	}
-	
-	safeRelease(color_source);
-	safeRelease(depth_source);
-	safeRelease(body_source);
-	safeRelease(users_source);
-
-	if (!sensor || FAILED(hr))
-	{
-		printf("No Kinect found\n");
 		return false;
 	}
 
-	color_description->get_Width(&def_width_color);
-	color_description->get_Height(&def_height_color);
-	depth_description->get_Width(&def_width_depth);
-	depth_description->get_Height(&def_height_depth);
+	if (sensor)
+	{
+		// Initialize the Kinect and get coordinate mapper and the frame reader
+
+		if (SUCCEEDED(hr))
+		{
+			hr = sensor->get_CoordinateMapper(&coordinate_mapper);
+		}
+
+		hr = sensor->Open();
+
+		if (SUCCEEDED(hr))
+		{
+			hr = sensor->OpenMultiSourceFrameReader(
+				FrameSourceTypes::FrameSourceTypes_Depth | FrameSourceTypes::FrameSourceTypes_Color | FrameSourceTypes::FrameSourceTypes_BodyIndex | FrameSourceTypes::FrameSourceTypes_Body,
+				&multi_source_frame_reader);
+		}
+	}
 
 	this->width = width;
 	this->height = height;
+
+	if (!sensor || FAILED(hr))
+	{
+		return false;
+	}
 
 	return true;
 }
@@ -109,7 +92,7 @@ void Kinect2Driver::stop()
 		rec_t.join();
 }
 
-void Kinect2Driver::getSkeletons(IBodyFrame* body_frame, Mat &skeleton, const int n_frame)
+void Kinect2Driver::getSkeletons(IBody** bodies, Mat &skeleton, const int n_frame)
 {
 	stringstream ss; ss << n_frame;
 	string id = ss.str();
@@ -117,31 +100,38 @@ void Kinect2Driver::getSkeletons(IBodyFrame* body_frame, Mat &skeleton, const in
 	string frame_name = skel_folder + "joints" + id + ".txt";
 	skeleton_file.open(frame_name);
 
-	IBody* body[BODY_COUNT] = { 0 };
-	body_frame->GetAndRefreshBodyData(BODY_COUNT, body);
-
-	for (int count = 0; count < BODY_COUNT; count++)
+	if (coordinate_mapper)
 	{
-		BOOLEAN tracked = false;
-		body[count]->get_IsTracked(&tracked);
-
-		if (tracked)
+		for (int count = 0; count < BODY_COUNT; count++)
 		{
-			skeleton_file << "user " << count << "\n";
-			Joint joint[JointType::JointType_Count];
-			body[count]->GetJoints(JointType::JointType_Count, joint);
-
-			for (int type = 0; type < JointType::JointType_Count; type++)
+			IBody* body = bodies[count];
+			if (body)
 			{
-				skeleton_file << "joint " << type << " ";
-				DepthSpacePoint depth_space_point = { 0 };
-				coordinate_mapper->MapCameraPointToDepthSpace(joint[type].Position, &depth_space_point);
-				int x = static_cast<int>(depth_space_point.X);
-				int y = static_cast<int>(depth_space_point.Y);
-				skeleton_file << joint[type].Position.X << joint[type].Position.Y << joint[type].Position.Z << depth_space_point.X << depth_space_point.Y << "\n";
-				if ((x >= 0) && (x < def_width_depth) && (y >= 0) && (y < def_height_depth))
+				BOOLEAN tracked = false;
+				HRESULT hr = body->get_IsTracked(&tracked);
+
+				if (SUCCEEDED(hr) && tracked)
 				{
-					cv::circle(skeleton, cv::Point(x, y), 5, static_cast< cv::Scalar >(users_color[count]), -1);
+					skeleton_file << "user " << count << "\n";
+					Joint joints[JointType::JointType_Count];
+					hr = body->GetJoints(_countof(joints), joints);
+
+					if (SUCCEEDED(hr))
+					{
+						for (int type = 0; type < _countof(joints); type++)
+						{
+							skeleton_file << "joint " << type << " ";
+							DepthSpacePoint depth_space_point = { 0 };
+							coordinate_mapper->MapCameraPointToDepthSpace(joints[type].Position, &depth_space_point);
+							int x = static_cast<int>(depth_space_point.X);
+							int y = static_cast<int>(depth_space_point.Y);
+							skeleton_file << joints[type].Position.X << " " << joints[type].Position.Y << " " << joints[type].Position.Z << " " << depth_space_point.X << " " << depth_space_point.Y << "\n";
+							if ((x >= 0) && (x < depth_width) && (y >= 0) && (y < depth_height))
+							{
+								cv::circle(skeleton, cv::Point(x, y), 5, static_cast<cv::Scalar>(users_color[count]), -1);
+							}
+						}
+					}
 				}
 			}
 		}
@@ -155,81 +145,236 @@ void Kinect2Driver::start()
 	int n_frame = 0;
 	string frame_name;
 
-	Mat color_big(def_height_color, def_width_color, CV_8UC4);
-	Mat depth_big(def_height_depth, def_width_depth, CV_16SC1);
-	Mat users_big(def_height_depth, def_width_depth, CV_8UC3);
+	Mat color_big;
 	Mat color_small(height, width, CV_8UC4);
-	Mat depth_to_show(def_height_depth, def_width_depth, CV_8UC1);
-	Mat skeleton(def_height_depth, def_width_depth, CV_8UC3);
-	unsigned int buffer_color = def_width_color * def_height_color * 4 * sizeof(unsigned char);
-	unsigned int buffer_depth = def_width_depth * def_height_depth * sizeof(unsigned short);
-
+	Mat depth_big;
+	Mat users_big;
+	Mat depth_to_show;
+	Mat skeleton;
+	unsigned int buffer_color;
+	unsigned int buffer_depth;
+	
 	while (!is_stopping)
 	{
-		try
+		if (!multi_source_frame_reader)
 		{
-			IColorFrame* color_frame = nullptr;
-			IDepthFrame* depth_frame = nullptr;
-			IBodyFrame* body_frame = nullptr;
-			IBodyIndexFrame* users_frame = nullptr;
-			
-			HRESULT hr = color_reader->AcquireLatestFrame(&color_frame);
-			hr &= depth_reader->AcquireLatestFrame(&depth_frame);
-			hr &= body_reader->AcquireLatestFrame(&body_frame);
-			hr &= users_reader->AcquireLatestFrame(&users_frame);
+			return;
+		}
 
-			if (FAILED(hr) || depth_frame == nullptr || color_frame == nullptr || users_frame == nullptr || body_frame == nullptr)
-				continue;
+		IMultiSourceFrame* multi_source_frame = NULL;
+		IDepthFrame* depth_frame = NULL;
+		IColorFrame* color_frame = NULL;
+		IBodyIndexFrame* body_index_frame = NULL;
+		IBodyFrame* body_frame = NULL;
 
-			color_frame->CopyConvertedFrameDataToArray(buffer_color, reinterpret_cast<BYTE*>(color_big.data), ColorImageFormat::ColorImageFormat_Bgra);
-			cv::resize(color_big, color_small, cv::Size(), 0.5, 0.5);
-			safeRelease(color_frame);
+		HRESULT hr = multi_source_frame_reader->AcquireLatestFrame(&multi_source_frame);
 
-			depth_frame->AccessUnderlyingBuffer(&buffer_depth, reinterpret_cast<UINT16**>(&depth_big.data));
-			depth_big.convertTo(depth_to_show, CV_8U, -255.0f / 4500.0f, 255.0f);
-			safeRelease(depth_frame);
+		if (SUCCEEDED(hr))
+		{
+			IDepthFrameReference* depth_reference_frame = NULL;
 
-			unsigned int buffer_users = 0;
-			unsigned char* tmp = nullptr;
-			users_frame->AccessUnderlyingBuffer(&buffer_users, &tmp);
-			for (int y = 0; y < def_height_depth; y++)
+			hr = multi_source_frame->get_DepthFrameReference(&depth_reference_frame);
+			if (SUCCEEDED(hr))
 			{
-				for (int x = 0; x < def_width_depth; x++)
+				hr = depth_reference_frame->AcquireFrame(&depth_frame);
+			}
+
+			safeRelease(depth_reference_frame);
+		}
+
+		if (SUCCEEDED(hr))
+		{
+			IColorFrameReference* color_frame_reference = NULL;
+
+			hr = multi_source_frame->get_ColorFrameReference(&color_frame_reference);
+			if (SUCCEEDED(hr))
+			{
+				hr = color_frame_reference->AcquireFrame(&color_frame);
+			}
+
+			safeRelease(color_frame_reference);
+		}
+
+		if (SUCCEEDED(hr))
+		{
+			IBodyIndexFrameReference* body_ind_frame_reference = NULL;
+
+			hr = multi_source_frame->get_BodyIndexFrameReference(&body_ind_frame_reference);
+			if (SUCCEEDED(hr))
+			{
+				hr = body_ind_frame_reference->AcquireFrame(&body_index_frame);
+			}
+
+			safeRelease(body_ind_frame_reference);
+		}
+
+		if (SUCCEEDED(hr))
+		{
+			IBodyFrameReference* body_frame_reference = NULL;
+
+			hr = multi_source_frame->get_BodyFrameReference(&body_frame_reference);
+			if (SUCCEEDED(hr))
+			{
+				hr = body_frame_reference->AcquireFrame(&body_frame);
+			}
+
+			safeRelease(body_frame_reference);
+		}
+
+		if (SUCCEEDED(hr))
+		{
+			INT64 depth_time = 0;
+			IFrameDescription* depth_description = NULL;
+
+			IFrameDescription* color_description = NULL;
+			int color_width = 0;
+			int color_height = 0;
+			ColorImageFormat imageFormat = ColorImageFormat_None;
+
+			IFrameDescription* body_index_description = NULL;
+			int body_index_width = 0;
+			int body_index_height = 0;
+			UINT nBodyIndexBufferSize = 0;
+			BYTE *pBodyIndexBuffer = NULL;
+
+			IBody* bodies[BODY_COUNT] = { 0 };
+
+			// get depth frame data
+
+			hr = depth_frame->get_RelativeTime(&depth_time);
+
+			if (SUCCEEDED(hr))
+			{
+				hr = depth_frame->get_FrameDescription(&depth_description);
+			}
+
+			if (SUCCEEDED(hr))
+			{
+				hr = depth_description->get_Width(&depth_width);
+			}
+
+			if (SUCCEEDED(hr))
+			{
+				hr = depth_description->get_Height(&depth_height);
+			}
+
+			// get color frame data
+
+			if (SUCCEEDED(hr))
+			{
+				hr = color_frame->get_FrameDescription(&color_description);
+			}
+
+			if (SUCCEEDED(hr))
+			{
+				hr = color_description->get_Width(&color_width);
+			}
+
+			if (SUCCEEDED(hr))
+			{
+				hr = color_description->get_Height(&color_height);
+			}
+
+			if (SUCCEEDED(hr))
+			{
+				hr = color_frame->get_RawColorImageFormat(&imageFormat);
+			}
+
+			// get body index frame data
+
+			if (SUCCEEDED(hr))
+			{
+				hr = body_index_frame->get_FrameDescription(&body_index_description);
+			}
+
+			if (SUCCEEDED(hr))
+			{
+				hr = body_index_description->get_Width(&body_index_width);
+			}
+
+			if (SUCCEEDED(hr))
+			{
+				hr = body_index_description->get_Height(&body_index_height);
+			}
+
+			if (SUCCEEDED(hr))
+			{
+				hr = body_frame->GetAndRefreshBodyData(_countof(bodies), bodies);
+			}
+
+			if (SUCCEEDED(hr))
+			{
+				color_big.create(color_height, color_width, CV_8UC4);
+				depth_big.create(depth_height, depth_width, CV_16SC1);
+				users_big.create(body_index_height, body_index_width, CV_8UC3);
+				skeleton.create(body_index_height, body_index_width, CV_8UC3);
+				skeleton = Mat::zeros(body_index_height, body_index_width, CV_8UC3);
+				depth_to_show.create(depth_height, depth_width, CV_8UC1);
+				buffer_color = color_width * color_height * 4 * sizeof(unsigned char);
+				buffer_depth = depth_width * depth_height * sizeof(unsigned short);
+
+				unsigned int buffer_users = 0;
+				unsigned char* tmp = nullptr;
+				hr = body_index_frame->AccessUnderlyingBuffer(&buffer_users, &tmp);
+				if (SUCCEEDED(hr))
 				{
-					unsigned int index = y * def_width_depth + x;
-					if (tmp[index] != 0xff)
+					for (int y = 0; y < depth_height; y++)
 					{
-						users_big.at<cv::Vec3b>(y, x) = users_color[tmp[index]];
-					}
-					else
-					{
-						users_big.at<cv::Vec3b>(y, x) = cv::Vec3b(0, 0, 0);
+						for (int x = 0; x < depth_width; x++)
+						{
+							unsigned int index = y * depth_width + x;
+							if (tmp[index] != 0xff)
+							{
+								users_big.at<cv::Vec3b>(y, x) = users_color[tmp[index]];
+							}
+							else
+							{
+								users_big.at<cv::Vec3b>(y, x) = cv::Vec3b(0, 0, 0);
+							}
+						}
 					}
 				}
+
+				hr = depth_frame->AccessUnderlyingBuffer(&buffer_depth, reinterpret_cast<UINT16**>(&depth_big.data));
+				if (SUCCEEDED(hr))
+					depth_big.convertTo(depth_to_show, CV_8U, -255.0f / 4500.0f, 255.0f);
+
+				hr = color_frame->CopyConvertedFrameDataToArray(buffer_color, reinterpret_cast<BYTE*>(color_big.data), ColorImageFormat::ColorImageFormat_Bgra);
+				if (SUCCEEDED(hr))
+					cv::resize(color_big, color_small, color_small.size());
+
+				getSkeletons(bodies, skeleton, n_frame);
+
+				imshow("Color", color_small);
+				imshow("Depth", depth_to_show);
+				imshow("Users", users_big);
+				imshow("Skeleton", skeleton);
+				waitKey(10);
+
+				stringstream ss; ss << n_frame;
+				string id = ss.str();
+				frame_name = rgb_folder + "img" + id + ".png";
+				imwrite(frame_name, color_small);
+				frame_name = depth_folder + "img" + id + ".png";
+				imwrite(frame_name, depth_big);
+				frame_name = users_folder + "img" + id + ".png";
+				imwrite(frame_name, users_big);
+				n_frame++;
 			}
-			safeRelease(users_frame);
 
-			getSkeletons(body_frame, skeleton, n_frame);
-
-			imshow("Color", color_small);
-			imshow("Depth", depth_to_show);
-			imshow("Users", users_big);
-			imshow("Skeleton", skeleton);
-			waitKey(30);
-
-			stringstream ss; ss << n_frame;
-			string id = ss.str();
-			/*frame_name = rgb_folder + "img" + id + ".png";
-			imwrite(frame_name, color_small);
-			frame_name = depth_folder + "img" + id + ".png";
-			imwrite(frame_name, depth_big);	
-			frame_name = users_folder + "img" + id + ".png";
-			imwrite(frame_name, users_big);*/
-			n_frame++;
+			for (int i = 0; i < _countof(bodies); ++i)
+			{
+				safeRelease(bodies[i]);
+			}
+			safeRelease(depth_description);
+			safeRelease(color_description);
+			safeRelease(body_index_description);
 		}
-		catch (std::exception e)
-		{
-			printf("Program was stopped while waiting\n");
-		}
+
+		safeRelease(depth_frame);
+		safeRelease(color_frame);
+		safeRelease(body_index_frame);
+		safeRelease(body_frame);
+		safeRelease(multi_source_frame);
 	}
 }

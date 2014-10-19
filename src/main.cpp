@@ -10,8 +10,7 @@
 #include <opencv2/highgui/highgui.hpp>
 #include <opencv2/opencv.hpp>
 
-#include <kinect2driver.h>
-#include <cameraDriver.h>
+#include <kinect2Driver.h>
 
 using namespace cv;
 using namespace std;
@@ -28,7 +27,7 @@ int main(int argc, char *argv[])
 		return -1;
 	}
 
-	string dest_folder = "C:/Users/Ilaria/Documents/dataset/";
+	string dest_folder = "C:/Users/ig5424-Admin/Documents/dataset/";
 	int freq = 10;
 	int n = 0;
 
